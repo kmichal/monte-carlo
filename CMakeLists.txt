@@ -11,6 +11,9 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Find required packages
+find_package(CURL REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 add_executable(mc)
 target_sources(mc PRIVATE
@@ -22,4 +25,4 @@ FILES
     modules/EquitySim.cpp
 )
 
-target_link_libraries(mc PRIVATE)
+target_link_libraries(mc PRIVATE CURL::libcurl nlohmann_json::nlohmann_json)

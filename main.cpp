@@ -1,5 +1,9 @@
 #include <iostream>
 #include <CLI/CLI.hpp>
+#include <string>
+#include <chrono>
+#include <cstdlib>
+
 
 import MarketData;
 import EquitySim;
@@ -12,6 +16,8 @@ int main(int argc, char** argv) {
     int lookback_days;
     int days_forward;
     int simulations;
+    std::string start_date_str;
+    std::string end_date_str;
 
     CLI::App app{"Monte Carlo Simulation Tool"};
 
@@ -23,9 +29,51 @@ int main(int argc, char** argv) {
 
     CLI11_PARSE(app, argc, argv);
 
+    auto now = std::chrono::system_clock::now();
 
-    TradierClient client;
-    EquityEngine engine;
+    auto x_days_ago = now - std::chrono::days(lookback_days + (lookback_days / 5 * 2)); // Roughly account for weekends
+
+    try {
+        std::chrono::zoned_time eastern_now{"America/New_York", now};
+        std::chrono::zoned_time eastern_start{"America/New_York", x_days_ago};
+
+        end_date_str = std::format("{:%F}", eastern_now);
+        start_date_str = std::format("{:%F}", eastern_start);
+
+        std::cout << "Current Date (ET): " << end_date_str << std::endl;
+        std::cout << "Start Date (-" << lookback_days << " trading days): " << start_date_str << std::endl;
+    } 
+    catch (const std::runtime_error& e) {
+        std::cerr << "Time zone error: " << e.what() << std::endl;
+    }
+
+
+    TradierClient client(token);
+
+
+    HistoryRequest req{
+        .symbol = symbol,
+        .start_date = start_date_str,
+        .end_date = end_date_str
+    };
+
+
+    std::vector<double> history = {};
+
+    auto result = client.get_market_history(req);
+    
+        if (result) {
+        std::cout << "Retrieved " << result->size() << " candles for " << req.symbol << ":\n";
+        
+        for (const auto& candle : *result) {
+            history.push_back(candle.close);
+
+        }
+    } else {
+        std::cerr << "Failed to retrieve or parse data." << std::endl;
+    }
+
+
 
     return 0;
 
