@@ -19,6 +19,7 @@ PRIVATE
 FILE_SET CXX_MODULES
 FILES
     modules/MarketData.cpp
+    modules/EquitySim.cpp
 )
 
 target_link_libraries(mc PRIVATE)

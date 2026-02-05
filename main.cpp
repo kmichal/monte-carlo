@@ -2,6 +2,7 @@
 #include <CLI/CLI.hpp>
 
 import MarketData;
+import EquitySim;
 
 
 int main(int argc, char** argv) {
@@ -24,6 +25,7 @@ int main(int argc, char** argv) {
 
 
     TradierClient client;
+    EquityEngine engine;
 
     return 0;
 
