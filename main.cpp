@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
     engine.calibrate(history);
 
     double current_price = history.back();
-    SimResult res = engine.run(current_price, days_forward, simulations);
+    SimResult res = engine.run_parallel(current_price, days_forward, simulations);
     engine.print_result(res);
 
     return 0;
