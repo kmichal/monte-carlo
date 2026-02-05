@@ -17,7 +17,8 @@ target_sources(mc PRIVATE
     main.cpp
 PRIVATE
 FILE_SET CXX_MODULES
-
+FILES
+    modules/MarketData.cpp
 )
 
 target_link_libraries(mc PRIVATE)

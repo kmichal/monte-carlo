@@ -1,9 +1,11 @@
 #include <iostream>
 #include <CLI/CLI.hpp>
 
+import MarketData;
+
 
 int main(int argc, char** argv) {
-    
+
     std::string token;
     std::string symbol;
     int lookback_days;
@@ -21,7 +23,7 @@ int main(int argc, char** argv) {
     CLI11_PARSE(app, argc, argv);
 
 
-
+    TradierClient client;
 
     return 0;
 
