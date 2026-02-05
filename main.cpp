@@ -73,7 +73,12 @@ int main(int argc, char** argv) {
         std::cerr << "Failed to retrieve or parse data." << std::endl;
     }
 
+    EquityEngine engine;
+    engine.calibrate(history);
 
+    double current_price = history.back();
+    SimResult res = engine.run(current_price, days_forward, simulations);
+    engine.print_result(res);
 
     return 0;
 
