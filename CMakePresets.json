@@ -1,0 +1,50 @@
+{
+  "version" : 8,
+  "cmakeMinimumRequired" : {
+      "major" : 3,
+      "minor" : 31,
+      "patch" : 0
+  },
+  "configurePresets" : [
+    {
+      "name" : "default",
+      "displayName" : "default",
+      "description" : "Default Release Build",
+      "generator" : "Ninja",
+      "binaryDir" : "${sourceDir}/build",
+      "cacheVariables" : {
+          "CMAKE_EXPORT_COMPILE_COMMANDS" : true,
+          "CMAKE_BUILD_TYPE" : "Release",
+          "CMAKE_INSTALL_PREFIX" : "${sourceDir}/build",
+          "CMAKE_CXX_COMPILER": "clang++",
+          "CMAKE_CXX_VISIBILITY_PRESET": "hidden",
+          "LOG_LEVEL": "DEBUG"
+      }
+    },
+    {
+      "name" : "github",
+      "displayName" : "github",
+      "description" : "GitHub Release Config",
+      "generator" : "Ninja",
+      "binaryDir" : "${sourceDir}/build",
+      "cacheVariables" : {
+          "CMAKE_EXPORT_COMPILE_COMMANDS" : true,
+          "CMAKE_BUILD_TYPE" : "Release",
+          "CMAKE_INSTALL_PREFIX" : "${sourceDir}/build",
+          "CMAKE_CXX_COMPILER": "clang++",
+          "CMAKE_CXX_VISIBILITY_PRESET": "hidden",
+          "LOG_LEVEL": "NONE"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default"
+    },
+    {
+      "name": "github",
+      "configurePreset": "github"
+    }
+  ]
+}
