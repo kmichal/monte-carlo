@@ -26,3 +26,10 @@ FILES
 )
 
 target_link_libraries(mc PRIVATE CURL::libcurl nlohmann_json::nlohmann_json)
+
+# Enable SIMD optimizations (AVX2 + FMA)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(mc PRIVATE -mavx2 -mfma -O3)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_options(mc PRIVATE /arch:AVX2 /O2)
+endif()

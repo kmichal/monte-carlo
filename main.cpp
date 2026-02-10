@@ -18,6 +18,7 @@ int main(int argc, char** argv) {
     int simulations;
     std::string start_date_str;
     std::string end_date_str;
+    bool use_simd = false;
 
     CLI::App app{"Monte Carlo Simulation Tool"};
 
@@ -26,6 +27,7 @@ int main(int argc, char** argv) {
     app.add_option("--lookback-days", lookback_days, "Number of trading days to look back")->default_val(90);
     app.add_option("--days-forward", days_forward, "Number of trading days to look forward")->default_val(90);
     app.add_option("--simulations", simulations, "Number of simulations to run")->default_val(10000);
+    app.add_flag("--simd", use_simd, "Use SIMD-optimized simulation (AVX2)");
 
     CLI11_PARSE(app, argc, argv);
 
@@ -77,7 +79,14 @@ int main(int argc, char** argv) {
     engine.calibrate(history);
 
     double current_price = history.back();
-    SimResult res = engine.run_parallel(current_price, days_forward, simulations);
+    SimResult res;
+    if (use_simd) {
+        std::cout << "Running SIMD-optimized simulation..." << std::endl;
+        res = engine.run_simd(current_price, days_forward, simulations);
+    } else {
+        std::cout << "Running parallel simulation..." << std::endl;
+        res = engine.run_parallel(current_price, days_forward, simulations);
+    }
     engine.print_result(res);
 
     return 0;
