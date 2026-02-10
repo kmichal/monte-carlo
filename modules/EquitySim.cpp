@@ -29,28 +29,25 @@ struct alignas(32) Vec4 {
     const double& operator[](size_t i) const { return data[i]; }
 };
 
-// Fast scalar exp for array processing (more reliable than full SIMD exp)
-inline void fast_exp_4(const double* input, double* output) {
-    for (int i = 0; i < 4; ++i) {
-        double x = input[i];
-        // Clamp to avoid overflow
-        if (x > 709.0) x = 709.0;
-        if (x < -709.0) x = -709.0;
-        
-        // Range reduction
-        double k = std::round(x * 1.4426950408889634);  // x / ln(2)
-        double f = x - k * 0.6931471805599453;  // x - k*ln(2)
-        
-        // Polynomial approximation for exp(f) where f in [-0.5, 0.5]
-        double f2 = f * f;
-        double f4 = f2 * f2;
-        double p = 1.0 + f * (1.0 + f * (0.5 + f * (0.16666666666666666 + 
-               f * (0.041666666666666664 + f * (0.008333333333333333 + 
-               f * 0.001388888888888889)))));
-        
-        // Scale by 2^k
-        output[i] = std::ldexp(p, static_cast<int>(k));
-    }
+// AVX2 optimized exponential approximation for small x (common in daily stock returns)
+// 6th order Taylor/Horner scheme valid for roughly [-0.5, 0.5]
+inline __m256d avx2_exp_approx(__m256d x) {
+    const __m256d c6 = _mm256_set1_pd(1.0/720.0);
+    const __m256d c5 = _mm256_set1_pd(1.0/120.0);
+    const __m256d c4 = _mm256_set1_pd(1.0/24.0);
+    const __m256d c3 = _mm256_set1_pd(1.0/6.0);
+    const __m256d c2 = _mm256_set1_pd(0.5);
+    const __m256d c1 = _mm256_set1_pd(1.0);
+
+    // Horner's method: 1 + x(1 + x(0.5 + ...))
+    __m256d res = _mm256_fmadd_pd(x, c6, c5);
+    res = _mm256_fmadd_pd(x, res, c4);
+    res = _mm256_fmadd_pd(x, res, c3);
+    res = _mm256_fmadd_pd(x, res, c2);
+    res = _mm256_fmadd_pd(x, res, c1);
+    res = _mm256_fmadd_pd(x, res, c1);
+
+    return res;
 }
 
 // Box-Muller transform for generating normal random numbers
@@ -175,7 +172,7 @@ public:
     return { s0, avg, *max_it, *min_it, sigma, mu };
   }
 
-  // SIMD-optimized version using AVX2
+  // SIMD-optimized version using AVX2 Intrinsics
   SimResult run_simd(double s0, int days_to_sim, int num_paths) {
     std::random_device rd;
     std::mt19937_64 gen(rd());
@@ -183,54 +180,58 @@ public:
     
     double dt = 1.0 / TRADING_DAYS;
     
-    // Precompute drift term: (mu - 0.5 * sigma * sigma) * dt
+    // Precompute constant terms
     double drift_term = (mu - 0.5 * sigma * sigma) * dt;
     double sigma_sqrt_dt = sigma * std::sqrt(dt);
     
+    // Load constants into AVX registers
+    __m256d r_drift = _mm256_set1_pd(drift_term);
+    __m256d r_vol   = _mm256_set1_pd(sigma_sqrt_dt);
+
     std::vector<double> final_prices;
     final_prices.reserve(num_paths);
     
-    // Process paths in chunks of 4 using SIMD-aligned arrays
+    // Process paths in chunks of 4
     int simd_paths = num_paths / 4 * 4;
-    alignas(32) double prices[4];
+    
+    // Local storage for random numbers and intermediate results
     alignas(32) double u1[4], u2[4];
     alignas(32) double z1[4], z2[4];
-    alignas(32) double exp_input[4];
-    alignas(32) double exp_output[4];
-    
+
     for (int i = 0; i < simd_paths; i += 4) {
-        // Initialize all 4 prices to s0
-        prices[0] = prices[1] = prices[2] = prices[3] = s0;
+        // Initialize 4 paths with s0
+        __m256d prices = _mm256_set1_pd(s0);
         
         for (int d = 0; d < days_to_sim; ++d) {
-            // Generate 8 uniform random numbers [0, 1)
-            // Using Box-Muller, we get 8 normals from 8 uniforms
+            // Generate 8 uniforms for Box-Muller
             for (int j = 0; j < 4; ++j) {
                 u1[j] = dist(gen);
                 u2[j] = dist(gen);
             }
-            
-            // Convert to normal using Box-Muller (generates 8 normals)
+             
+            // Scalar Box-Muller (can be vectorized too, but exp() is the main bottleneck)
             box_muller_4(u1, u2, z1, z2);
             
-            // Process first 4 normals (z1) for this day
-            // GBM: price *= exp(drift + sigma * sqrt(dt) * z)
-            for (int j = 0; j < 4; ++j) {
-                exp_input[j] = drift_term + sigma_sqrt_dt * z1[j];
-            }
+            // Load 4 normal variates into vector
+            __m256d z = _mm256_load_pd(z1); 
+
+            // Calculate return: drift + vol * z
+            // Use FMA: a * b + c
+            __m256d exponent = _mm256_fmadd_pd(r_vol, z, r_drift);
             
-            // Compute exp for all 4 paths
-            fast_exp_4(exp_input, exp_output);
+            // Calculate exp(exponent) using AVX approximation
+            __m256d multiplier = avx2_exp_approx(exponent);
             
-            // Multiply prices
-            for (int j = 0; j < 4; ++j) {
-                prices[j] *= exp_output[j];
-            }
+            // Update prices: prices *= multiplier
+            prices = _mm256_mul_pd(prices, multiplier);
         }
         
         // Store results
+        alignas(32) double res_buffer[4];
+        _mm256_store_pd(res_buffer, prices);
+        
         for (int j = 0; j < 4; ++j) {
-            final_prices.push_back(prices[j]);
+            final_prices.push_back(res_buffer[j]);
         }
     }
     

@@ -3,6 +3,7 @@
 #include <string>
 #include <chrono>
 #include <cstdlib>
+#include <curl/curl.h>
 
 
 import MarketData;
@@ -10,6 +11,8 @@ import EquitySim;
 
 
 int main(int argc, char** argv) {
+    // Initialize libcurl globally once (not thread-safe, so must be done in main)
+    curl_global_init(CURL_GLOBAL_ALL);
 
     std::string token;
     std::string symbol;
@@ -89,6 +92,7 @@ int main(int argc, char** argv) {
     }
     engine.print_result(res);
 
+    curl_global_cleanup();
     return 0;
 
 }
