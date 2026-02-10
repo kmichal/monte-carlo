@@ -45,12 +45,9 @@ private:
 public:
     explicit TradierClient(std::string api_token) 
         : token_(std::move(api_token)) {
-        curl_global_init(CURL_GLOBAL_ALL);
     }
 
-    ~TradierClient() {
-        curl_global_cleanup();
-    }
+    ~TradierClient() = default;
 
     // Now returns a vector of Candles instead of a string
     std::optional<std::vector<Candle>> get_market_history(const HistoryRequest& req) {
