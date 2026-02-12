@@ -87,8 +87,7 @@ int main(int argc, char** argv) {
         std::cout << "Running SIMD-optimized simulation..." << std::endl;
 
         res = engine.run_simd_parallel(current_price, days_forward, simulations);
-        
-        engine.print_result(res);
+
     } else {
 
         std::cout << "Running parallel simulation..." << std::endl;
