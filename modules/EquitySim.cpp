@@ -252,6 +252,98 @@ public:
     return {s0, avg, *max_it, *min_it, sigma, mu};
   }
 
+  // Hybrid: Multi-threaded + SIMD-optimized version
+  SimResult run_simd_parallel(double s0, int days_to_sim, int total_paths) {
+    if (total_paths <= 0) {
+        return {s0, s0, s0, s0, sigma, mu};
+    }
+
+    unsigned int num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 2;
+
+    int paths_per_thread = total_paths / num_threads;
+    int remainder = total_paths % num_threads;
+
+    std::vector<std::future<std::vector<double>>> futures;
+
+    // Launch workers that each use SIMD internally
+    for (unsigned int t = 0; t < num_threads; ++t) {
+        // Distribute remainder paths to first 'remainder' threads
+        int paths_this_thread = paths_per_thread + (t < remainder ? 1 : 0);
+        
+        if (paths_this_thread == 0) continue;
+
+        futures.push_back(std::async(std::launch::async, [this, s0, days_to_sim, paths_this_thread, t]() {
+            std::mt19937 gen(std::random_device{}() + t);
+            std::normal_distribution<double> normal_dist(0.0, 1.0);
+
+            double dt = 1.0 / TRADING_DAYS;
+            double drift_term = (mu - 0.5 * sigma * sigma) * dt;
+            double sigma_sqrt_dt = sigma * std::sqrt(dt);
+
+            __m256d r_drift = _mm256_set1_pd(drift_term);
+            __m256d r_vol = _mm256_set1_pd(sigma_sqrt_dt);
+
+            std::vector<double> local_results;
+            local_results.reserve(paths_this_thread);
+
+            // SIMD loop: process 4 paths at a time using std::normal_distribution
+            int simd_paths = paths_this_thread / 4 * 4;
+            alignas(32) double z_buf[4];
+            alignas(32) double res_buffer[4];
+
+            for (int i = 0; i < simd_paths; i += 4) {
+                __m256d prices = _mm256_set1_pd(s0);
+
+                for (int d = 0; d < days_to_sim; ++d) {
+                    // Generate 4 normal variates directly (no expensive Box-Muller)
+                    for (int j = 0; j < 4; ++j) {
+                        z_buf[j] = normal_dist(gen);
+                    }
+
+                    // Load into vector and apply GBM formula
+                    __m256d z_vec = _mm256_load_pd(z_buf);
+                    __m256d exponent = _mm256_fmadd_pd(r_vol, z_vec, r_drift);
+                    __m256d multiplier = avx2_exp_approx(exponent);
+                    prices = _mm256_mul_pd(prices, multiplier);
+                }
+
+                _mm256_store_pd(res_buffer, prices);
+                for (int j = 0; j < 4; ++j) local_results.push_back(res_buffer[j]);
+            }
+
+            // Scalar fallback for remaining paths
+            for (int i = simd_paths; i < paths_this_thread; ++i) {
+                double price = s0;
+                for (int d = 0; d < days_to_sim; ++d) {
+                    double z = normal_dist(gen);
+                    price *= std::exp(drift_term + sigma_sqrt_dt * z);
+                }
+                local_results.push_back(price);
+            }
+
+            return local_results;
+        }));
+    }
+
+    // Aggregate results from all threads
+    std::vector<double> all_prices;
+    if (total_paths > 0) all_prices.reserve(total_paths);
+    for (auto& f : futures) {
+        auto chunk = f.get();
+        all_prices.insert(all_prices.end(), chunk.begin(), chunk.end());
+    }
+
+    if (all_prices.empty()) {
+        return {s0, s0, s0, s0, sigma, mu};
+    }
+
+    auto [min_it, max_it] = std::minmax_element(all_prices.begin(), all_prices.end());
+    double avg = std::accumulate(all_prices.begin(), all_prices.end(), 0.0) / all_prices.size();
+
+    return {s0, avg, *max_it, *min_it, sigma, mu};
+  }
+
   void print_result(const SimResult &result) {
 
     std::cout << "------------------------------------------\n";

@@ -85,9 +85,14 @@ int main(int argc, char** argv) {
     SimResult res;
     if (use_simd) {
         std::cout << "Running SIMD-optimized simulation..." << std::endl;
-        res = engine.run_simd(current_price, days_forward, simulations);
+
+        res = engine.run_simd_parallel(current_price, days_forward, simulations);
+        
+        engine.print_result(res);
     } else {
+
         std::cout << "Running parallel simulation..." << std::endl;
+
         res = engine.run_parallel(current_price, days_forward, simulations);
     }
     engine.print_result(res);
