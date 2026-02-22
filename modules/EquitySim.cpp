@@ -131,55 +131,66 @@ public:
     return {s0, avg, *max_it, *min_it, sigma, mu};
   }
 
+private:
+  // Helper template to execute simulation paths across multiple threads
+  template <typename Func>
+  SimResult execute_parallel_paths(double s0, int days_to_sim, int total_paths, Func&& simulate_chunk) {
+      if (total_paths <= 0) {
+          return {s0, s0, s0, s0, sigma, mu};
+      }
+
+      unsigned int num_threads = std::thread::hardware_concurrency();
+      if (num_threads == 0) num_threads = 2; // Fallback
+
+      int paths_per_thread = total_paths / num_threads;
+      int remainder = total_paths % num_threads;
+
+      std::vector<std::future<void>> futures;
+      std::vector<double> all_prices(total_paths);
+
+      // Launch "chunks" of work
+      int offset = 0;
+      for (unsigned int t = 0; t < num_threads; ++t) {
+          int paths_this_thread = paths_per_thread + (t < remainder ? 1 : 0);
+          if (paths_this_thread == 0) continue;
+
+          futures.push_back(std::async(std::launch::async, 
+              [this, s0, days_to_sim, paths_this_thread, offset, &all_prices, t, &simulate_chunk]() {
+                  simulate_chunk(t, s0, days_to_sim, paths_this_thread, offset, all_prices);
+              }
+          ));
+          offset += paths_this_thread;
+      }
+
+      // Collect results
+      for (auto& f : futures) {
+          f.get();
+      }
+
+      auto [min_it, max_it] = std::minmax_element(all_prices.begin(), all_prices.end());
+      double avg = std::accumulate(all_prices.begin(), all_prices.end(), 0.0) / all_prices.size();
+
+      return { s0, avg, *max_it, *min_it, sigma, mu };
+  }
+
+public:
   SimResult run_parallel(double s0, int days_to_sim, int total_paths) {
-    if (total_paths <= 0) {
-        return {s0, s0, s0, s0, sigma, mu};
-    }
+      return execute_parallel_paths(s0, days_to_sim, total_paths, 
+          [this](unsigned int t, double s0, int days_to_sim, int paths_this_thread, int offset, std::vector<double>& all_prices) {
+              std::mt19937 gen(std::random_device{}() + t); 
+              std::normal_distribution<double> dist(0.0, 1.0);
+              
+              double dt = 1.0 / TRADING_DAYS;
 
-    // Determine how many threads the CPU can actually handle
-    unsigned int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0) num_threads = 2; // Fallback
-
-    int paths_per_thread = total_paths / num_threads;
-    int remainder = total_paths % num_threads;
-
-    std::vector<std::future<void>> futures;
-    std::vector<double> all_prices(total_paths);
-
-    // Launch "chunks" of work
-    int offset = 0;
-    for (unsigned int t = 0; t < num_threads; ++t) {
-        int paths_this_thread = paths_per_thread + (t < remainder ? 1 : 0);
-        if (paths_this_thread == 0) continue;
-
-        futures.push_back(std::async(std::launch::async, [this, s0, days_to_sim, paths_this_thread, offset, &all_prices, t]() {
-            // Each thread gets its own generator and unique seed
-            std::mt19937 gen(std::random_device{}() + t); 
-            std::normal_distribution<double> dist(0.0, 1.0);
-            
-            double dt = 1.0 / TRADING_DAYS;
-
-            for (int i = 0; i < paths_this_thread; ++i) {
-                double price = s0;
-                for (int d = 0; d < days_to_sim; ++d) {
-                    price *= std::exp((mu - 0.5 * sigma * sigma) * dt + (sigma * std::sqrt(dt) * dist(gen)));
-                }
-                all_prices[offset + i] = price;
-            }
-        }));
-        
-        offset += paths_this_thread;
-    }
-
-    // Collect results
-    for (auto& f : futures) {
-        f.get();
-    }
-
-    auto [min_it, max_it] = std::minmax_element(all_prices.begin(), all_prices.end());
-    double avg = std::accumulate(all_prices.begin(), all_prices.end(), 0.0) / all_prices.size();
-
-    return { s0, avg, *max_it, *min_it, sigma, mu };
+              for (int i = 0; i < paths_this_thread; ++i) {
+                  double price = s0;
+                  for (int d = 0; d < days_to_sim; ++d) {
+                      price *= std::exp((mu - 0.5 * sigma * sigma) * dt + (sigma * std::sqrt(dt) * dist(gen)));
+                  }
+                  all_prices[offset + i] = price;
+              }
+          }
+      );
   }
 
   // SIMD-optimized version using AVX2 Intrinsics
@@ -264,90 +275,59 @@ public:
 
   // Hybrid: Multi-threaded + SIMD-optimized version
   SimResult run_simd_parallel(double s0, int days_to_sim, int total_paths) {
-    if (total_paths <= 0) {
-        return {s0, s0, s0, s0, sigma, mu};
-    }
+      return execute_parallel_paths(s0, days_to_sim, total_paths, 
+          [this](unsigned int t, double s0, int days_to_sim, int paths_this_thread, int offset, std::vector<double>& all_prices) {
+              std::mt19937_64 gen(std::random_device{}() + t);
+              std::uniform_real_distribution<double> uni_dist(0.0, 1.0);
+              std::normal_distribution<double> normal_dist(0.0, 1.0); // For fallback
 
-    unsigned int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0) num_threads = 2;
+              double dt = 1.0 / TRADING_DAYS;
+              double drift_term = (mu - 0.5 * sigma * sigma) * dt;
+              double sigma_sqrt_dt = sigma * std::sqrt(dt);
 
-    int paths_per_thread = total_paths / num_threads;
-    int remainder = total_paths % num_threads;
+              __m256d r_drift = _mm256_set1_pd(drift_term);
+              __m256d r_vol = _mm256_set1_pd(sigma_sqrt_dt);
 
-    std::vector<std::future<void>> futures;
-    std::vector<double> all_prices(total_paths);
+              // SIMD loop: process 4 paths at a time
+              int simd_paths = paths_this_thread / 4 * 4;
+              alignas(32) double u1[4], u2[4];
+              alignas(32) double z1[4], z2[4];
+              alignas(32) double res_buffer[4];
 
-    // Launch workers that each use SIMD internally
-    int offset = 0;
-    for (unsigned int t = 0; t < num_threads; ++t) {
-        // Distribute remainder paths to first 'remainder' threads
-        int paths_this_thread = paths_per_thread + (t < remainder ? 1 : 0);
-        if (paths_this_thread == 0) continue;
+              for (int i = 0; i < simd_paths; i += 4) {
+                  __m256d prices = _mm256_set1_pd(s0);
 
-        futures.push_back(std::async(std::launch::async, [this, s0, days_to_sim, paths_this_thread, offset, &all_prices, t]() {
-            std::mt19937_64 gen(std::random_device{}() + t);
-            std::uniform_real_distribution<double> uni_dist(0.0, 1.0);
-            std::normal_distribution<double> normal_dist(0.0, 1.0); // For fallback
+                  for (int d = 0; d < days_to_sim; ++d) {
+                      for (int j = 0; j < 4; ++j) {
+                          u1[j] = uni_dist(gen);
+                          u2[j] = uni_dist(gen);
+                      }
+                      
+                      // Transform uniform to normal 4-wide
+                      box_muller_4(u1, u2, z1, z2);
 
-            double dt = 1.0 / TRADING_DAYS;
-            double drift_term = (mu - 0.5 * sigma * sigma) * dt;
-            double sigma_sqrt_dt = sigma * std::sqrt(dt);
+                      // Load into vector and apply GBM formula
+                      __m256d z_vec = _mm256_load_pd(z1);
+                      __m256d exponent = _mm256_fmadd_pd(r_vol, z_vec, r_drift);
+                      __m256d multiplier = avx2_exp_approx(exponent);
+                      prices = _mm256_mul_pd(prices, multiplier);
+                  }
 
-            __m256d r_drift = _mm256_set1_pd(drift_term);
-            __m256d r_vol = _mm256_set1_pd(sigma_sqrt_dt);
+                  _mm256_store_pd(res_buffer, prices);
+                  for (int j = 0; j < 4; ++j) all_prices[offset + i + j] = res_buffer[j];
+              }
 
-            // SIMD loop: process 4 paths at a time
-            int simd_paths = paths_this_thread / 4 * 4;
-            alignas(32) double u1[4], u2[4];
-            alignas(32) double z1[4], z2[4];
-            alignas(32) double res_buffer[4];
-
-            for (int i = 0; i < simd_paths; i += 4) {
-                __m256d prices = _mm256_set1_pd(s0);
-
-                for (int d = 0; d < days_to_sim; ++d) {
-                    for (int j = 0; j < 4; ++j) {
-                        u1[j] = uni_dist(gen);
-                        u2[j] = uni_dist(gen);
-                    }
-                    
-                    // Transform uniform to normal 4-wide
-                    box_muller_4(u1, u2, z1, z2);
-
-                    // Load into vector and apply GBM formula
-                    __m256d z_vec = _mm256_load_pd(z1);
-                    __m256d exponent = _mm256_fmadd_pd(r_vol, z_vec, r_drift);
-                    __m256d multiplier = avx2_exp_approx(exponent);
-                    prices = _mm256_mul_pd(prices, multiplier);
-                }
-
-                _mm256_store_pd(res_buffer, prices);
-                for (int j = 0; j < 4; ++j) all_prices[offset + i + j] = res_buffer[j];
-            }
-
-            // Scalar fallback for remaining paths
-            for (int i = simd_paths; i < paths_this_thread; ++i) {
-                double price = s0;
-                for (int d = 0; d < days_to_sim; ++d) {
-                    double z = normal_dist(gen);
-                    price *= std::exp(drift_term + sigma_sqrt_dt * z);
-                }
-                all_prices[offset + i] = price;
-            }
-        }));
-        
-        offset += paths_this_thread;
-    }
-
-    // Aggregate results from all threads
-    for (auto& f : futures) {
-        f.get();
-    }
-
-    auto [min_it, max_it] = std::minmax_element(all_prices.begin(), all_prices.end());
-    double avg = std::accumulate(all_prices.begin(), all_prices.end(), 0.0) / all_prices.size();
-
-    return {s0, avg, *max_it, *min_it, sigma, mu};
+              // Scalar fallback for remaining paths
+              for (int i = simd_paths; i < paths_this_thread; ++i) {
+                  double price = s0;
+                  for (int d = 0; d < days_to_sim; ++d) {
+                      double z = normal_dist(gen);
+                      price *= std::exp(drift_term + sigma_sqrt_dt * z);
+                  }
+                  all_prices[offset + i] = price;
+              }
+          }
+      );
   }
 
   void print_result(const SimResult &result) {
