@@ -61,7 +61,14 @@ public:
             
             // Navigate the specific Tradier structure: { "history": { "day": [...] } }
             // Note: We use .at() for safety; it throws if the key is missing.
-            std::vector<Candle> candles = j.at("history").at("day").get<std::vector<Candle>>();
+            auto day_data = j.at("history").at("day");
+            std::vector<Candle> candles;
+            
+            if (day_data.is_array()) {
+                candles = day_data.get<std::vector<Candle>>();
+            } else {
+                candles.push_back(day_data.get<Candle>());
+            }
             
             return candles;
             
