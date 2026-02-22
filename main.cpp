@@ -67,15 +67,20 @@ int main(int argc, char** argv) {
 
     auto result = client.get_market_history(req);
     
-        if (result) {
+    if (result) {
         std::cout << "Retrieved " << result->size() << " candles for " << req.symbol << ":\n";
         
         for (const auto& candle : *result) {
             history.push_back(candle.close);
-
         }
     } else {
         std::cerr << "Failed to retrieve or parse data." << std::endl;
+        return 1;
+    }
+
+    if (history.empty()) {
+        std::cerr << "No historical data retrieved." << std::endl;
+        return 1;
     }
 
     EquityEngine engine;

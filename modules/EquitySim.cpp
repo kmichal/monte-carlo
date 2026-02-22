@@ -97,8 +97,8 @@ public:
     double stdev = std::sqrt(var);
 
     // Annualize parameters
-    mu = mean_return * TRADING_DAYS;
     sigma = stdev * std::sqrt(TRADING_DAYS);
+    mu = (mean_return * TRADING_DAYS) + (0.5 * sigma * sigma);
   }
 
   SimResult run(double s0, int days_to_sim, int num_paths) {
